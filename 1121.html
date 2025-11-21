@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>上傳 FHIR Organization 到 HAPI</title>
+  <style>
+    :root{font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;}
+    body{max-width:900px;margin:36px auto;padding:24px;background:#f7f8fb;border-radius:12px;color:#0f172a}
+    h1{font-size:20px;margin:0 0 8px}
+    p.lead{margin:0 0 18px;color:#475569}
+    .card{background:white;padding:18px;border-radius:10px;box-shadow:0 6px 18px rgba(15,23,42,0.06)}
+    label{display:block;margin-bottom:6px;font-weight:600}
+    input[type=text]{width:100%;padding:10px;border-radius:8px;border:1px solid #e6e9ef;font-size:14px}
+    .row{display:flex;gap:8px;align-items:center;margin-top:12px}
+    button{padding:10px 14px;border-radius:8px;border:0;background:#0ea5a4;color:white;font-weight:600;cursor:pointer}
+    button.secondary{background:#64748b}
+    pre{background:#0b1220;color:#e6eef8;padding:12px;border-radius:8px;overflow:auto}
+    .result{margin-top:12px;padding:12px;border-radius:8px;background:#eef2ff}
+    .hidden{display:none}
+    .small{font-size:13px;color:#334155}
+    a.link{color:#0ea5a4;text-decoration:none}
+  </style>
+</head>
+<body>
+  <h1>將 Organization 上傳到 HAPI FHIR Server</h1>
+  <p class="lead">伺服器: <code>https://hapi.fhir.org/baseR4/</code><br>輸入機構/單位名稱，按 <strong>建立並上傳</strong>，網頁會顯示回傳的 resource id 與對應連結。</p>
+
+  <div class="card">
+    <label for="orgName">機構 / 單位 名稱</label>
+    <input id="orgName" type="text" placeholder="例如：台北市健康診所" />
+
+    <div class="row">
+      <button id="createBtn">建立並上傳</button>
+      <button id="clearBtn" class="secondary">清除</button>
+      <div id="status" class="small" style="margin-left:8px"></div>
+    </div>
+
+    <div id="resultBox" class="result hidden">
+      <div><strong>Resource ID：</strong><span id="resourceId"></span> <button id="copyBtn" class="secondary" style="margin-left:8px">複製</button></div>
+      <div style="margin-top:8px"><a id="resourceLink" class="link" target="_blank" rel="noopener">檢視資源 (HAPI)</a></div>
+      <details style="margin-top:10px"><summary>回應完整 JSON</summary><pre id="rawResp">-</pre></details>
+    </div>
+
+    <div style="margin-top:14px" class="small">注意：此範例會送出簡單的 Organization JSON：<code>{ resourceType: "Organization", name: "..." }</code><br>伺服器若回傳其他格式，程式會嘗試自動解析 id（先檢查回傳 JSON 的 <code>id</code>，再檢查 Location header）。</div>
+  </div>
+
+<script>
+const BASE = 'https://hapi.fhir.org/baseR4/';
+const createBtn = document.getElementById('createBtn');
+const clearBtn = document.getElementById('clearBtn');
+const statusEl = document.getElementById('status');
+const resultBox = document.getElementById('resultBox');
+const resourceIdEl = document.getElementById('resourceId');
+const resourceLink = document.getElementById('resourceLink');
+const rawResp = document.getElementById('rawResp');
+const copyBtn = document.getElementById('copyBtn');
+
+function setStatus(txt){ statusEl.textContent = txt; }
+function showResult(id, jsonText){ resultBox.classList.remove('hidden'); resourceIdEl.textContent = id; resourceLink.href = BASE + 'Organization/' + id; resourceLink.textContent = resourceLink.href; rawResp.textContent = jsonText; }
+
+createBtn.addEventListener('click', async ()=>{
+  const name = document.getElementById('orgName').value.trim();
+  resultBox.classList.add('hidden');
+  rawResp.textContent = '-';
+  if(!name){ setStatus('請輸入名稱'); return; }
+  setStatus('傳送中...');
+  createBtn.disabled = true;
+  try{
+    const body = { resourceType: 'Organization', name };
+    const resp = await fetch(BASE + 'Organization', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/fhir+json;charset=UTF-8',
+        'Accept': 'application/fhir+json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    // read response text for debugging
+    const text = await resp.text();
+    let parsed = null;
+    try{ parsed = text ? JSON.parse(text) : null; } catch(e){ parsed = null; }
+
+    // try to extract id in several ways
+    let id = null;
+    if(parsed && parsed.id){ id = parsed.id; }
+    // Some servers return a full resource under 'resource' or in a Bundle
+    if(!id && parsed){
+      if(parsed.resource && parsed.resource.id) id = parsed.resource.id;
+      else if(parsed.entry && parsed.entry.length && parsed.entry[0].resource && parsed.entry[0].resource.id) id = parsed.entry[0].resource.id;
+    }
+
+    // check Location or Content-Location header
+    if(!id){
+      const loc = resp.headers.get('location') || resp.headers.get('content-location');
+      if(loc){
+        const m = loc.match(/Organization\/(\w[\w\-\.]*)/);
+        if(m) id = m[1];
+      }
+    }
+
+    if(resp.ok && id){
+      setStatus('建立成功');
+      showResult(id, parsed ? JSON.stringify(parsed, null, 2) : text);
+    } else if(resp.ok && !id){
+      setStatus('上傳成功，但無法解析 id，請查看回應');
+      showResult('(無法解析 id)', parsed ? JSON.stringify(parsed, null, 2) : text);
+    } else {
+      setStatus('伺服器回應錯誤: ' + resp.status + ' ' + resp.statusText);
+      showResult('(錯誤回應)', parsed ? JSON.stringify(parsed, null, 2) : text);
+    }
+  } catch(err){
+    setStatus('錯誤: ' + err.message);
+    rawResp.textContent = err.stack || String(err);
+    resultBox.classList.remove('hidden');
+    resourceIdEl.textContent = '(例外)';
+  } finally{
+    createBtn.disabled = false;
+  }
+});
+
+clearBtn.addEventListener('click', ()=>{
+  document.getElementById('orgName').value = '';
+  resultBox.classList.add('hidden');
+  setStatus('');
+});
+
+copyBtn.addEventListener('click', ()=>{
+  const id = resourceIdEl.textContent;
+  if(!id) return;
+  navigator.clipboard?.writeText(id).then(()=>{
+    setStatus('已複製 id');
+    setTimeout(()=>setStatus(''),2000);
+  }).catch(()=> setStatus('複製失敗'));
+});
+
+</script>
+</body>
+</html>
